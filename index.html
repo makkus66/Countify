@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Countify</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; background: #f0f2f5;
+           text-align: center; padding: 24px; }
+    h1   { font-size: 32px; color: #1a1a2e; margin-bottom: 20px; }
+    .card { background: white; border-radius: 14px; padding: 20px;
+            margin: 12px auto; max-width: 600px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+    .count       { font-size: 72px; font-weight: bold; color: #2196F3; }
+    .count-label { font-size: 14px; color: #888; margin-bottom: 4px; }
+    .live-dot    { display: inline-block; width: 10px; height: 10px;
+                   border-radius: 50%; background: #4CAF50;
+                   margin-right: 6px; vertical-align: middle; }
+    .status-txt  { font-size: 13px; color: #888; }
+    .sensor-label { display: flex; justify-content: space-between;
+                    font-size: 13px; color: #555; margin: 10px 0 3px; }
+    .bar-bg { background: #eee; border-radius: 8px;
+              height: 18px; overflow: hidden; }
+    .bar    { height: 100%; border-radius: 8px;
+              transition: width 0.4s ease; width: 0%; }
+    .bar-s1 { background: #4CAF50; }
+    .bar-s2 { background: #2196F3; }
+    .btn { width: 100%; padding: 13px; border: none; border-radius: 10px;
+           font-size: 15px; cursor: pointer; margin-top: 10px;
+           font-weight: bold; transition: opacity .2s; }
+    .btn:disabled { opacity: .5; cursor: default; }
+    .btn-cal { background: #FF9800; color: white; }
+    .cal-status { font-size: 13px; margin-top: 10px; min-height: 18px; }
+  </style>
+</head>
+<body>
+  <h1>Countify</h1>
+
+  <!-- Personenzähler -->
+  <div class="card">
+    <div class="count-label">Personen im Raum</div>
+    <div class="count" id="count">-</div>
+    <br>
+    <span class="live-dot" id="dot"></span>
+    <span class="status-txt" id="statusTxt">Verbinde...</span>
+  </div>
+
+  <!-- Sensor Rohwerte -->
+  <div class="card">
+    <b>Live Sensor-Rohwerte</b>
+    <div class="sensor-label">
+      <span>Sensor 1</span><span id="s1val">-</span>
+    </div>
+    <div class="bar-bg">
+      <div class="bar bar-s1" id="s1bar"></div>
+    </div>
+    <div class="sensor-label">
+      <span>Sensor 2</span><span id="s2val">-</span>
+    </div>
+    <div class="bar-bg">
+      <div class="bar bar-s2" id="s2bar"></div>
+    </div>
+  </div>
+
+  <!-- Verlaufsgraph -->
+  <div class="card">
+    <b>Verlauf (letzte 60 Minuten)</b>
+    <canvas id="verlaufChart" height="120"></canvas>
+  </div>
+
+  <!-- Kalibrierung -->
+  <div class="card">
+    <b>Kalibrierung</b>
+    <p style="font-size:13px;color:#888;margin:8px 0">
+      Setzt den Zähler zurück und startet die Kalibrierung am ESP32
+    </p>
+    <button class="btn btn-cal" id="calBtn" onclick="calibrate()">
+      Kalibrierung starten
+    </button>
+    <div class="cal-status" id="calStatus"></div>
+  </div>
+
+  <script>
+    const MAX = 4095;
+    const ESP32_URL = "http://172.20.10.2";
+    let chart = null;
+
+    function initChart() {
+      const ctx = document.getElementById("verlaufChart").getContext("2d");
+      chart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: [],
+          datasets: [{
+            label: "Personen",
+            data: [],
+            borderColor: "#2196F3",
+            backgroundColor: "rgba(33,150,243,0.1)",
+            borderWidth: 2,
+            pointRadius: 3,
+            tension: 0.3,
+            fill: true
+          }]
+        },
+        options: {
+          responsive: true,
+          scales: {
+            y: { beginAtZero: true, ticks: { stepSize: 1 } },
+            x: { ticks: { maxTicksLimit: 8 } }
+          },
+          plugins: { legend: { display: false } }
+        }
+      });
+    }
+
+    async function fetchLive() {
+      try {
+        const r = await fetch("/api/live");
+        const d = await r.json();
+        document.getElementById("count").textContent = d.personen;
+        document.getElementById("s1val").textContent = d.sensor1;
+        document.getElementById("s2val").textContent = d.sensor2;
+        document.getElementById("s1bar").style.width = (d.sensor1/MAX*100)+"%";
+        document.getElementById("s2bar").style.width = (d.sensor2/MAX*100)+"%";
+        document.getElementById("dot").style.background = "#4CAF50";
+        document.getElementById("statusTxt").textContent =
+          "Live — " + new Date().toLocaleTimeString("de-AT");
+      } catch(e) {
+        document.getElementById("dot").style.background = "#f44336";
+        document.getElementById("statusTxt").textContent = "Keine Verbindung";
+      }
+    }
+
+    async function fetchVerlauf() {
+      try {
+        const r = await fetch("/api/verlauf");
+        const data = await r.json();
+        chart.data.labels = data.map(d =>
+          new Date(d.zeitpunkt * 1000).toLocaleTimeString("de-AT",
+            { hour: "2-digit", minute: "2-digit" })
+        );
+        chart.data.datasets[0].data = data.map(d => d.personen);
+        chart.update();
+      } catch(e) {}
+    }
+
+    async function calibrate() {
+      const btn = document.getElementById("calBtn");
+      const status = document.getElementById("calStatus");
+      btn.disabled = true;
+      btn.textContent = "Läuft...";
+      status.textContent = "";
+      try {
+        const r = await fetch(ESP32_URL + "/api/calibrate", { method: "POST" });
+        const d = await r.json();
+        if (d.status === "ok") {
+          status.textContent = "✓ Kalibrierung abgeschlossen";
+          status.style.color = "#4CAF50";
+        } else {
+          throw new Error();
+        }
+      } catch(e) {
+        status.textContent = "✗ ESP32 nicht erreichbar";
+        status.style.color = "#f44336";
+      }
+      btn.textContent = "Kalibrierung starten";
+      btn.disabled = false;
+    }
+
+    initChart();
+    fetchLive();
+    fetchVerlauf();
+    setInterval(fetchLive, 2000);
+    setInterval(fetchVerlauf, 10000);
+  </script>
+</body>
+</html>
